@@ -189,8 +189,22 @@ if ($PSBoundParameters.ContainsKey('Tail')) {
     $getContentParameters.Tail = $Tail
 }
 
+# Returns the current terminal width, falling back to 120 columns when the
+# host does not expose a usable window size (e.g. output is redirected).
+function Get-ConsoleWidth {
+    try {
+        $width = $Host.UI.RawUI.WindowSize.Width
+        if ($width -gt 0) {
+            return $width
+        }
+    } catch {}
+
+    return 120
+}
+
 Get-Content @getContentParameters | ForEach-Object {
     $line = $_
+    $consoleWidth = Get-ConsoleWidth
 
     # Handle lines that are not in CMTrace format.
     if ($line -notmatch $cmTracePattern) {
@@ -198,6 +212,10 @@ Get-Content @getContentParameters | ForEach-Object {
             $Type -contains 'All' -and
             -not $PSBoundParameters.ContainsKey('WhereObject')
         ) {
+            if ($line.Length -ge $consoleWidth) {
+                $line = $line.Substring(0, $consoleWidth - 1)
+            }
+
             Write-Host $line -ForegroundColor DarkGray
         }
 
@@ -229,7 +247,7 @@ Get-Content @getContentParameters | ForEach-Object {
         Severity  = $severity
         Thread    = $Matches.Thread
         File      = $Matches.File
-        Message   = $Matches.Message
+        Message   = $Matches.Message.Trim()
     }
 
     # Apply the custom Where-Object clause.
@@ -242,12 +260,22 @@ Get-Content @getContentParameters | ForEach-Object {
         }
     }
 
-    $formattedLine = '[{0}] [{1}] [{2}] [Thread:{3}] {4}' -f `
+    $prefix = '[{0}] [{1}] [{2}] [Thread:{3}] ' -f `
         $entry.Timestamp,
         $entry.Component,
         $entry.Severity,
-        $entry.Thread,
-        $entry.Message
+        $entry.Thread
+
+    # Truncate the message so the whole entry fits on a single terminal
+    # line, instead of wrapping onto the next one.
+    $maxMessageLength = [Math]::Max($consoleWidth - $prefix.Length - 1, 0)
+    $message = $entry.Message
+
+    if ($message.Length -gt $maxMessageLength) {
+        $message = $message.Substring(0, $maxMessageLength)
+    }
+
+    $formattedLine = $prefix + $message
 
     $color = switch ($entry.Severity) {
         'Warning' { 'Yellow' }
