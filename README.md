@@ -7,7 +7,7 @@ A colorized, live-following viewer for CMTrace-formatted logs — the log format
 - Parses each CMTrace log line into a structured entry: timestamp, component, context, severity, thread, file, and message.
 - Color-codes output by severity: **Information** = Gray, **Warning** = Yellow, **Error** = Red. Non-CMTrace lines pass through in dark gray.
 - Word-wraps long messages to the console width, indenting continuation lines under the message column instead of letting the terminal hard-wrap mid-word. Skipped automatically when output is redirected.
-- Lets you hide individual fields (`Timestamp`, `Component`, `Severity`, `Thread`, `Message`) from the displayed line, while still filtering on them via `-Type` or `-WhereObject`.
+- Lets you hide individual fields (`Timestamp`, `Component`, `Severity`, `Thread`, `Message`) from the displayed line, while still filtering on them via `-Type` or `-WhereObject`. `-Compact` is a shorthand for showing only Timestamp and Message.
 - After processing existing lines, keeps the file open and prints new entries as they're written (like `tail -f`).
 
 ## Usage
@@ -31,6 +31,9 @@ A colorized, live-following viewer for CMTrace-formatted logs — the log format
 
 # Filter on a field while hiding it from the displayed line
 .\Watch-CMTraceLog.ps1 -LogFile 'C:\Windows\CCM\Logs\AppEnforce.log' -WhereObject { $_.Severity -eq 'Error' } -HideField Severity, Thread
+
+# Only show Timestamp and Message
+.\Watch-CMTraceLog.ps1 -LogFile 'C:\Windows\CCM\Logs\AppEnforce.log' -Compact
 ```
 
 Press `Ctrl+C` to stop monitoring.
@@ -43,7 +46,8 @@ Press `Ctrl+C` to stop monitoring.
 | `-Type`       | No       | Severity filter: `All` (default), `Information`, `Warning`, `Error`. Accepts multiple values. |
 | `-Tail`       | No       | Number of existing physical lines to process before following. Omit to process the entire existing log. Applied before parsing/filtering. |
 | `-WhereObject`| No       | A scriptblock filter applied to every parsed entry (`$_`). Non-CMTrace lines are hidden when this is set. |
-| `-HideField`  | No       | Fields to omit from the displayed line: `Timestamp`, `Component`, `Severity`, `Thread`, `Message`. Accepts multiple values. Hidden fields remain available for filtering via `-Type`/`-WhereObject`. |
+| `-HideField`  | No       | Fields to omit from the displayed line: `Timestamp`, `Component`, `Severity`, `Thread`, `Message`. Accepts multiple values. Hidden fields remain available for filtering via `-Type`/`-WhereObject`. Cannot be combined with `-Compact`. |
+| `-Compact`    | No       | Shorthand for `-HideField Component, Severity, Thread` — shows only Timestamp and Message. Cannot be combined with `-HideField`. |
 
 See the script's comment-based help (`Get-Help .\Watch-CMTraceLog.ps1 -Full`) for the complete parameter reference and more examples.
 

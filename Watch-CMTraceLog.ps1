@@ -94,6 +94,17 @@
     keep their normal left-to-right order (Timestamp, Component, Severity,
     Thread, Message).
 
+.PARAMETER Compact
+    Displays only the Timestamp and Message fields, hiding Component,
+    Severity, and Thread.
+
+    This is a shorthand equivalent to "-HideField Component, Severity,
+    Thread". As with -HideField, this only affects what is displayed;
+    filtering via -Type or -WhereObject still applies to the full parsed
+    entry.
+
+    Cannot be combined with -HideField.
+
 .EXAMPLE
     .\Watch-CMTraceLog.ps1 `
         -LogFile 'C:\Windows\CCM\Logs\AppEnforce.log'
@@ -157,6 +168,13 @@
     Filters on error severity while hiding the Severity and Thread fields
     from the displayed line.
 
+.EXAMPLE
+    .\Watch-CMTraceLog.ps1 `
+        -LogFile 'C:\Windows\CCM\Logs\AppEnforce.log' `
+        -Compact
+
+    Displays only the Timestamp and Message fields.
+
 .INPUTS
     None.
 
@@ -201,12 +219,22 @@ param (
 
     [Parameter()]
     [ValidateSet('Timestamp', 'Component', 'Severity', 'Thread', 'Message')]
-    [string[]]$HideField = @()
+    [string[]]$HideField = @(),
+
+    [Parameter()]
+    [switch]$Compact
 )
 
 if (-not (Test-Path -LiteralPath $LogFile -PathType Leaf)) {
     throw "Log file not found: $LogFile"
 }
+
+if ($Compact -and $PSBoundParameters.ContainsKey('HideField')) {
+    throw 'Specify either -Compact or -HideField, not both.'
+}
+
+# -Compact is shorthand for hiding every field except Timestamp and Message.
+$effectiveHideField = if ($Compact) { @('Component', 'Severity', 'Thread') } else { $HideField }
 
 # Map CMTrace numeric types to readable severity names.
 $typeMapping = @{
@@ -352,24 +380,24 @@ Get-Content @getContentParameters | ForEach-Object {
     # filtering above, which always sees the full parsed entry.
     $visibleFields = [System.Collections.Generic.List[string]]::new()
 
-    if ($HideField -notcontains 'Timestamp') {
+    if ($effectiveHideField -notcontains 'Timestamp') {
         $visibleFields.Add("[$($entry.Timestamp)]")
     }
 
-    if ($HideField -notcontains 'Component') {
+    if ($effectiveHideField -notcontains 'Component') {
         $visibleFields.Add("[$($entry.Component)]")
     }
 
-    if ($HideField -notcontains 'Severity') {
+    if ($effectiveHideField -notcontains 'Severity') {
         $visibleFields.Add("[$($entry.Severity)]")
     }
 
-    if ($HideField -notcontains 'Thread') {
+    if ($effectiveHideField -notcontains 'Thread') {
         $visibleFields.Add("[Thread:$($entry.Thread)]")
     }
 
     $prefix = if ($visibleFields.Count -gt 0) { ($visibleFields -join ' ') + ' ' } else { '' }
-    $message = if ($HideField -contains 'Message') { '' } else { $entry.Message }
+    $message = if ($effectiveHideField -contains 'Message') { '' } else { $entry.Message }
 
     $color = switch ($entry.Severity) {
         'Warning' { 'Yellow' }
