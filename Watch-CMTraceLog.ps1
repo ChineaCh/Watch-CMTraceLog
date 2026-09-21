@@ -71,6 +71,29 @@
 
     Non-CMTrace lines are not displayed when WhereObject is specified.
 
+.PARAMETER HideField
+    Specifies which fields to omit from the displayed line.
+
+    Supported values:
+
+        Timestamp
+        Component
+        Severity
+        Thread
+        Message
+
+    Multiple fields can be provided by separating them with commas.
+
+    Hiding a field only affects what is displayed; filtering (via -Type or
+    -WhereObject) is always applied first, against the full parsed entry, so
+    a hidden field can still be filtered on. For example, "-WhereObject {
+    $_.Severity -eq 'Error' } -HideField Severity" filters on severity while
+    hiding the Severity field from the output.
+
+    Any combination of fields can be hidden. The remaining, visible fields
+    keep their normal left-to-right order (Timestamp, Component, Severity,
+    Thread, Message).
+
 .EXAMPLE
     .\Watch-CMTraceLog.ps1 `
         -LogFile 'C:\Windows\CCM\Logs\AppEnforce.log'
@@ -125,6 +148,15 @@
     Displays warning and error entries containing "install" from the last
     500 lines and from new entries written afterward.
 
+.EXAMPLE
+    .\Watch-CMTraceLog.ps1 `
+        -LogFile 'C:\Windows\CCM\Logs\AppEnforce.log' `
+        -WhereObject { $_.Severity -eq 'Error' } `
+        -HideField Severity, Thread
+
+    Filters on error severity while hiding the Severity and Thread fields
+    from the displayed line.
+
 .INPUTS
     None.
 
@@ -165,7 +197,11 @@ param (
     [int]$Tail,
 
     [Parameter()]
-    [scriptblock]$WhereObject
+    [scriptblock]$WhereObject,
+
+    [Parameter()]
+    [ValidateSet('Timestamp', 'Component', 'Severity', 'Thread', 'Message')]
+    [string[]]$HideField = @()
 )
 
 if (-not (Test-Path -LiteralPath $LogFile -PathType Leaf)) {
@@ -312,11 +348,28 @@ Get-Content @getContentParameters | ForEach-Object {
         }
     }
 
-    $prefix = '[{0}] [{1}] [{2}] [Thread:{3}] ' -f `
-        $entry.Timestamp,
-        $entry.Component,
-        $entry.Severity,
-        $entry.Thread
+    # Build the displayed line last, so hiding a field never affects
+    # filtering above, which always sees the full parsed entry.
+    $visibleFields = [System.Collections.Generic.List[string]]::new()
+
+    if ($HideField -notcontains 'Timestamp') {
+        $visibleFields.Add("[$($entry.Timestamp)]")
+    }
+
+    if ($HideField -notcontains 'Component') {
+        $visibleFields.Add("[$($entry.Component)]")
+    }
+
+    if ($HideField -notcontains 'Severity') {
+        $visibleFields.Add("[$($entry.Severity)]")
+    }
+
+    if ($HideField -notcontains 'Thread') {
+        $visibleFields.Add("[Thread:$($entry.Thread)]")
+    }
+
+    $prefix = if ($visibleFields.Count -gt 0) { ($visibleFields -join ' ') + ' ' } else { '' }
+    $message = if ($HideField -contains 'Message') { '' } else { $entry.Message }
 
     $color = switch ($entry.Severity) {
         'Warning' { 'Yellow' }
@@ -325,5 +378,5 @@ Get-Content @getContentParameters | ForEach-Object {
         default   { 'Gray' }
     }
 
-    Write-WrappedHostLine -Prefix $prefix -Message $entry.Message -Color $color -Width (Get-ConsoleWidth)
+    Write-WrappedHostLine -Prefix $prefix -Message $message -Color $color -Width (Get-ConsoleWidth)
 }
