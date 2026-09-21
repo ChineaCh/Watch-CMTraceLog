@@ -6,6 +6,11 @@
     Reads a CMTrace-formatted log file, parses each entry, and displays it
     in a readable, color-coded format.
 
+    Long messages are word-wrapped to the console width, with continuation
+    lines indented to align under the message column instead of the
+    terminal hard-wrapping mid-word at column 0. Wrapping is skipped when
+    output is redirected (piped or captured to a file).
+
     After processing the existing lines, the script continues monitoring the
     file and displays new entries as they are written.
 
@@ -189,6 +194,71 @@ if ($PSBoundParameters.ContainsKey('Tail')) {
     $getContentParameters.Tail = $Tail
 }
 
+# Returns the current console width, or 0 when output is redirected (piped
+# or captured) and wrapping should be skipped.
+function Get-ConsoleWidth {
+    if ([Console]::IsOutputRedirected) {
+        return 0
+    }
+
+    try {
+        $width = $Host.UI.RawUI.WindowSize.Width
+    } catch {
+        return 0
+    }
+
+    if (-not $width -or $width -le 0) {
+        return 0
+    }
+
+    return $width
+}
+
+# Writes a prefixed line, word-wrapping the message so continuation lines
+# are indented to align under the message column instead of column 0.
+function Write-WrappedHostLine {
+    param (
+        [string]$Prefix,
+        [string]$Message,
+        [string]$Color,
+        [int]$Width
+    )
+
+    $minAvailableWidth = 20
+    $available = $Width - $Prefix.Length
+
+    if ($Width -le 0 -or $available -lt $minAvailableWidth) {
+        Write-Host ($Prefix + $Message) -ForegroundColor $Color
+        return
+    }
+
+    $words = $Message -split '\s+' | Where-Object { $_.Length -gt 0 }
+    $lines = [System.Collections.Generic.List[string]]::new()
+    $current = ''
+
+    foreach ($word in $words) {
+        $candidate = if ($current.Length -eq 0) { $word } else { "$current $word" }
+
+        if ($candidate.Length -gt $available -and $current.Length -gt 0) {
+            $lines.Add($current)
+            $current = $word
+        } else {
+            $current = $candidate
+        }
+    }
+
+    if ($current.Length -gt 0 -or $lines.Count -eq 0) {
+        $lines.Add($current)
+    }
+
+    $indent = ' ' * $Prefix.Length
+
+    for ($i = 0; $i -lt $lines.Count; $i++) {
+        $linePrefix = if ($i -eq 0) { $Prefix } else { $indent }
+        Write-Host ($linePrefix + $lines[$i]) -ForegroundColor $Color
+    }
+}
+
 Get-Content @getContentParameters | ForEach-Object {
     $line = $_
 
@@ -242,12 +312,11 @@ Get-Content @getContentParameters | ForEach-Object {
         }
     }
 
-    $formattedLine = '[{0}] [{1}] [{2}] [Thread:{3}] {4}' -f `
+    $prefix = '[{0}] [{1}] [{2}] [Thread:{3}] ' -f `
         $entry.Timestamp,
         $entry.Component,
         $entry.Severity,
-        $entry.Thread,
-        $entry.Message
+        $entry.Thread
 
     $color = switch ($entry.Severity) {
         'Warning' { 'Yellow' }
@@ -256,5 +325,5 @@ Get-Content @getContentParameters | ForEach-Object {
         default   { 'Gray' }
     }
 
-    Write-Host $formattedLine -ForegroundColor $color
+    Write-WrappedHostLine -Prefix $prefix -Message $entry.Message -Color $color -Width (Get-ConsoleWidth)
 }
