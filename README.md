@@ -6,6 +6,7 @@ A colorized, live-following viewer for CMTrace-formatted logs — the log format
 
 - Parses each CMTrace log line into a structured entry: timestamp, component, context, severity, thread, file, and message.
 - Color-codes output by severity: **Information** = Gray, **Warning** = Yellow, **Error** = Red. Non-CMTrace lines pass through in dark gray.
+- Word-wraps long messages to the console width, indenting continuation lines under the message column instead of letting the terminal hard-wrap mid-word. Skipped automatically when output is redirected.
 - After processing existing lines, keeps the file open and prints new entries as they're written (like `tail -f`).
 
 ## Usage
