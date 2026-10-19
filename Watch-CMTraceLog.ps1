@@ -95,15 +95,16 @@
     Thread, Message).
 
 .PARAMETER Compact
-    Displays only the Timestamp and Message fields, hiding Component,
-    Severity, and Thread.
+    On by default. Displays only the Timestamp and Message fields, hiding
+    Component, Severity, and Thread. Use -Compact:$false to show every field.
 
     This is a shorthand equivalent to "-HideField Component, Severity,
     Thread". As with -HideField, this only affects what is displayed;
     filtering via -Type or -WhereObject still applies to the full parsed
     entry.
 
-    Cannot be combined with -HideField.
+    When -HideField is specified, it takes over and Compact is not applied
+    (unless -Compact is also given explicitly, which is an error).
 
 .PARAMETER Highlight
     Specifies one or more regular expressions to highlight in the displayed
@@ -126,6 +127,8 @@
     Requires -Highlight.
 
 .PARAMETER FormatJson
+    On by default. Use -FormatJson:$false to show JSON as logged.
+
     Pretty-prints JSON found inside log messages (objects and arrays), with
     one property per line and two-space indentation. Text around the JSON is
     kept; JSON that starts mid-line is moved to its own line.
@@ -207,9 +210,10 @@
 .EXAMPLE
     .\Watch-CMTraceLog.ps1 `
         -LogFile 'C:\Windows\CCM\Logs\AppEnforce.log' `
-        -Compact
+        -Compact:$false
 
-    Displays only the Timestamp and Message fields.
+    Shows every field (Timestamp, Component, Severity, Thread) instead of
+    the default compact view.
 
 .EXAMPLE
     .\Watch-CMTraceLog.ps1 `
@@ -224,10 +228,11 @@
 .EXAMPLE
     .\Watch-CMTraceLog.ps1 `
         -LogFile 'C:\ProgramData\Microsoft\IntuneManagementExtension\Logs\IntuneManagementExtension.log' `
-        -FormatJson `
+        -FormatJson:$false `
         -Highlight 'ReportingCacheManager'
 
-    Pretty-prints JSON payloads in messages while highlighting matches.
+    Shows JSON payloads exactly as logged (one long line) while
+    highlighting matches.
 
 .INPUTS
     None.
@@ -281,7 +286,7 @@ param (
     [string[]]$HideField = @(),
 
     [Parameter()]
-    [switch]$Compact,
+    [switch]$Compact = $true,
 
     [Parameter()]
     [ValidateNotNullOrEmpty()]
@@ -291,16 +296,19 @@ param (
     [switch]$HighlightOnly,
 
     [Parameter()]
-    [switch]$FormatJson
+    [switch]$FormatJson = $true
 )
 
 if (-not (Test-Path -LiteralPath $LogFile -PathType Leaf)) {
     throw "Log file not found: $LogFile"
 }
 
-if ($Compact -and $PSBoundParameters.ContainsKey('HideField')) {
+if ($PSBoundParameters.ContainsKey('Compact') -and $Compact -and $PSBoundParameters.ContainsKey('HideField')) {
     throw 'Specify either -Compact or -HideField, not both.'
 }
+
+# Compact is on by default, but an explicit -HideField takes over.
+$useCompact = $Compact -and -not $PSBoundParameters.ContainsKey('HideField')
 
 if ($HighlightOnly -and -not $PSBoundParameters.ContainsKey('Highlight')) {
     throw '-HighlightOnly requires -Highlight.'
@@ -320,8 +328,8 @@ if ($PSBoundParameters.ContainsKey('Highlight')) {
     }
 }
 
-# -Compact is shorthand for hiding every field except Timestamp and Message.
-$effectiveHideField = if ($Compact) { @('Component', 'Severity', 'Thread') } else { $HideField }
+# Compact is shorthand for hiding every field except Timestamp and Message.
+$effectiveHideField = if ($useCompact) { @('Component', 'Severity', 'Thread') } else { $HideField }
 
 # Map CMTrace numeric types to readable severity names.
 $typeMapping = @{
