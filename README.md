@@ -15,11 +15,14 @@ A colorized, live-following viewer for CMTrace-formatted logs — the log format
 ## Usage
 
 ```powershell
-# Follow a log from the start
+# Show the last 50 lines (the default), then follow
 .\Watch-CMTraceLog.ps1 -LogFile 'C:\Windows\CCM\Logs\AppEnforce.log'
 
-# Only show the last 50 lines, then follow
-.\Watch-CMTraceLog.ps1 -LogFile 'C:\Windows\CCM\Logs\AppEnforce.log' -Tail 50
+# Show the entire existing log, then follow
+.\Watch-CMTraceLog.ps1 -LogFile 'C:\Windows\CCM\Logs\AppEnforce.log' -FullLog
+
+# Show a different number of lines, then follow
+.\Watch-CMTraceLog.ps1 -LogFile 'C:\Windows\CCM\Logs\AppEnforce.log' -Tail 200
 
 # Only show errors
 .\Watch-CMTraceLog.ps1 -LogFile 'C:\Windows\CCM\Logs\AppEnforce.log' -Type Error
@@ -55,7 +58,8 @@ Press `Ctrl+C` to stop monitoring.
 |---------------|----------|-------------|
 | `-LogFile`    | Yes      | Path to the CMTrace-formatted log file. Must exist when the script starts. |
 | `-Type`       | No       | Severity filter: `All` (default), `Information`, `Warning`, `Error`. Accepts multiple values. |
-| `-Tail`       | No       | Number of existing physical lines to process before following. Omit to process the entire existing log. Applied before parsing/filtering. |
+| `-Tail`       | No (50)  | Number of existing physical lines to process before following. The view is limited to the last 50 lines by default, and a notice says so at startup. Applied before parsing/filtering. Cannot be combined with `-FullLog`. |
+| `-FullLog`    | No       | Process the entire existing log instead of only the last `-Tail` lines. |
 | `-WhereObject`| No       | A scriptblock filter applied to every parsed entry (`$_`). Non-CMTrace lines are hidden when this is set. |
 | `-HideField`  | No       | Fields to omit from the displayed line: `Timestamp`, `Component`, `Severity`, `Thread`, `Message`. Accepts multiple values. Hidden fields remain available for filtering via `-Type`/`-WhereObject`. Replaces the default compact view; cannot be combined with an explicit `-Compact`. |
 | `-Highlight`  | No       | One or more regexes to highlight (black on yellow) in the message while following. Case-insensitive; works across word-wrapped lines. |
