@@ -125,6 +125,21 @@
 
     Requires -Highlight.
 
+.PARAMETER FormatJson
+    Pretty-prints JSON found inside log messages (objects and arrays), with
+    one property per line and two-space indentation. Text around the JSON is
+    kept; JSON that starts mid-line is moved to its own line.
+
+    The JSON is re-indented token for token, so values such as
+    "\/Date(...)\/" and escaped nested JSON strings are shown exactly as
+    logged. Text that only looks like JSON, such as "[Win32App]", is left
+    alone.
+
+    This only affects what is displayed. -WhereObject and -HighlightOnly
+    match against the original message, so a -Highlight pattern that
+    includes JSON punctuation (for example '"AppId":"x"') may filter but not
+    highlight; plain words and GUIDs work as expected.
+
 .EXAMPLE
     .\Watch-CMTraceLog.ps1 `
         -LogFile 'C:\Windows\CCM\Logs\AppEnforce.log'
@@ -205,6 +220,14 @@
     Live-follows the log, showing only entries that match one of the
     patterns, with each match highlighted.
 
+.EXAMPLE
+    .\Watch-CMTraceLog.ps1 `
+        -LogFile 'C:\ProgramData\Microsoft\IntuneManagementExtension\Logs\IntuneManagementExtension.log' `
+        -FormatJson `
+        -Highlight 'ReportingCacheManager'
+
+    Pretty-prints JSON payloads in messages while highlighting matches.
+
 .INPUTS
     None.
 
@@ -218,6 +241,11 @@
 
 .NOTES
     Press Ctrl+C to stop monitoring the log.
+
+    A log entry whose message contains line breaks spans several physical
+    lines in the file. Such entries are joined and shown as one entry. Tail
+    counts physical lines, so it can start in the middle of a multi-line
+    entry; the partial entry is then shown as plain lines.
 
     CMTrace type mapping:
 
@@ -259,7 +287,10 @@ param (
     [string[]]$Highlight,
 
     [Parameter()]
-    [switch]$HighlightOnly
+    [switch]$HighlightOnly,
+
+    [Parameter()]
+    [switch]$FormatJson
 )
 
 if (-not (Test-Path -LiteralPath $LogFile -PathType Leaf)) {
@@ -301,7 +332,7 @@ $typeMapping = @{
 # Expected CMTrace line format:
 # <![LOG[Message]LOG]!><time="..." date="..." component="..." ...>
 $cmTracePattern = @'
-^<!\[LOG\[(?<Message>.*?)\]LOG\]!><time="(?<Time>[^"]*)" date="(?<Date>[^"]*)" component="(?<Component>[^"]*)" context="(?<Context>[^"]*)" type="(?<Type>[^"]*)" thread="(?<Thread>[^"]*)" file="(?<File>[^"]*)">$
+(?s)^<!\[LOG\[(?<Message>.*?)\]LOG\]!><time="(?<Time>[^"]*)" date="(?<Date>[^"]*)" component="(?<Component>[^"]*)" context="(?<Context>[^"]*)" type="(?<Type>[^"]*)" thread="(?<Thread>[^"]*)" file="(?<File>[^"]*)">$
 '@
 
 $getContentParameters = @{
@@ -385,8 +416,227 @@ function Write-HighlightedLine {
     Write-Host $Text.Substring($position) -ForegroundColor $Color
 }
 
-# Writes a prefixed line, word-wrapping the message so continuation lines
-# are indented to align under the message column instead of column 0.
+# Trims the leading whitespace of every line and trailing blank space, so a
+# multi-line message lines up under the message column.
+function Format-MessageLines {
+    param (
+        [string]$Message
+    )
+
+    $lines = $Message -split '\r?\n' | ForEach-Object { $_.TrimStart() }
+
+    return (($lines -join "`n")).TrimEnd()
+}
+
+# Returns the index of the bracket that closes the JSON value opened at
+# $Start, skipping over string contents, or -1 if it is never closed.
+function Find-JsonEnd {
+    param (
+        [string]$Text,
+        [int]$Start
+    )
+
+    $closers = [System.Collections.Generic.Stack[char]]::new()
+    $inString = $false
+    $escaped = $false
+
+    for ($i = $Start; $i -lt $Text.Length; $i++) {
+        $c = $Text[$i]
+
+        if ($inString) {
+            if ($escaped) {
+                $escaped = $false
+            } elseif ($c -eq [char]'\') {
+                $escaped = $true
+            } elseif ($c -eq [char]'"') {
+                $inString = $false
+            }
+
+            continue
+        }
+
+        if ($c -eq [char]'"') {
+            $inString = $true
+        } elseif ($c -eq [char]'{') {
+            $closers.Push([char]'}')
+        } elseif ($c -eq [char]'[') {
+            $closers.Push([char]']')
+        } elseif ($c -eq [char]'}' -or $c -eq [char]']') {
+            if ($closers.Count -eq 0 -or $closers.Pop() -ne $c) {
+                return -1
+            }
+
+            if ($closers.Count -eq 0) {
+                return $i
+            }
+        }
+    }
+
+    return -1
+}
+
+# Re-indents a JSON document token for token (two spaces per level) without
+# parsing values, so the text is shown exactly as it was logged.
+function Format-JsonText {
+    param (
+        [string]$Json
+    )
+
+    $sb = [System.Text.StringBuilder]::new()
+    $depth = 0
+    $inString = $false
+    $escaped = $false
+
+    for ($i = 0; $i -lt $Json.Length; $i++) {
+        $c = $Json[$i]
+
+        if ($inString) {
+            $null = $sb.Append($c)
+
+            if ($escaped) {
+                $escaped = $false
+            } elseif ($c -eq [char]'\') {
+                $escaped = $true
+            } elseif ($c -eq [char]'"') {
+                $inString = $false
+            }
+
+            continue
+        }
+
+        if ($c -eq [char]'"') {
+            $inString = $true
+            $null = $sb.Append($c)
+        } elseif ($c -eq [char]'{' -or $c -eq [char]'[') {
+            $close = if ($c -eq [char]'{') { [char]'}' } else { [char]']' }
+            $next = $i + 1
+
+            while ($next -lt $Json.Length -and [char]::IsWhiteSpace($Json[$next])) {
+                $next++
+            }
+
+            if ($next -lt $Json.Length -and $Json[$next] -eq $close) {
+                # Empty object or array stays on one line.
+                $null = $sb.Append($c).Append($close)
+                $i = $next
+            } else {
+                $depth++
+                $null = $sb.Append($c).Append("`n").Append(' ' * (2 * $depth))
+            }
+        } elseif ($c -eq [char]'}' -or $c -eq [char]']') {
+            $depth--
+            $null = $sb.Append("`n").Append(' ' * (2 * $depth)).Append($c)
+        } elseif ($c -eq [char]',') {
+            $null = $sb.Append(',').Append("`n").Append(' ' * (2 * $depth))
+        } elseif ($c -eq [char]':') {
+            $null = $sb.Append(': ')
+        } elseif (-not [char]::IsWhiteSpace($c)) {
+            $null = $sb.Append($c)
+        }
+    }
+
+    return $sb.ToString()
+}
+
+# Pretty-prints every JSON object or array embedded in a message, leaving
+# the surrounding text alone.
+function Format-MessageJson {
+    param (
+        [string]$Message
+    )
+
+    $sb = [System.Text.StringBuilder]::new()
+    $position = 0
+    $i = 0
+
+    while ($i -lt $Message.Length) {
+        $c = $Message[$i]
+
+        if ($c -ne [char]'{' -and $c -ne [char]'[') {
+            $i++
+            continue
+        }
+
+        $end = Find-JsonEnd -Text $Message -Start $i
+
+        if ($end -lt 0) {
+            $i++
+            continue
+        }
+
+        $candidate = $Message.Substring($i, $end - $i + 1)
+
+        # Only objects/arrays that open with a key, string, or nested
+        # structure; skips things like "[Win32App]", "[1]" and "{}".
+        $isJson = $candidate -match '^[\[{]\s*["{\[]'
+
+        if ($isJson) {
+            try {
+                $null = ConvertFrom-Json -InputObject $candidate -ErrorAction Stop
+            } catch {
+                $isJson = $false
+            }
+        }
+
+        if (-not $isJson) {
+            $i++
+            continue
+        }
+
+        $before = $Message.Substring($position, $i - $position)
+        $lineStart = $before.LastIndexOf("`n") + 1
+
+        if ($before.Substring($lineStart).Trim().Length -eq 0) {
+            $before = $before.Substring(0, $lineStart)
+        } else {
+            $before = $before.TrimEnd() + "`n"
+        }
+
+        $null = $sb.Append($before).Append((Format-JsonText -Json $candidate))
+        $position = $end + 1
+
+        # Text that follows the JSON on the same line starts a new line.
+        $lineEnd = $Message.IndexOf("`n", $position)
+        $rest = if ($lineEnd -ge 0) { $Message.Substring($position, $lineEnd - $position) } else { $Message.Substring($position) }
+
+        if ($rest.Trim().Length -gt 0) {
+            $null = $sb.Append("`n")
+
+            while ($position -lt $Message.Length -and ($Message[$position] -eq ' ' -or $Message[$position] -eq "`t")) {
+                $position++
+            }
+        }
+
+        $i = $position
+    }
+
+    $null = $sb.Append($Message.Substring($position))
+
+    return $sb.ToString()
+}
+
+# Writes a log line that is not a parsed CMTrace entry (raw text), honoring
+# the same visibility rules the main loop applies to such lines.
+function Write-PlainLine {
+    param (
+        [string]$Text
+    )
+
+    if (-not $showPlainLines) {
+        return
+    }
+
+    if ($HighlightOnly -and -not $highlightRegex.IsMatch($Text)) {
+        return
+    }
+
+    Write-WrappedHostLine -Prefix '' -Message $Text -Color DarkGray -Width 0 -Regex $highlightRegex
+}
+
+# Writes a prefixed message. Long lines are word-wrapped so continuation
+# lines align under the message column instead of column 0, and messages
+# with line breaks keep them (indented under the prefix). Leading whitespace
+# of a line, such as JSON indentation, is kept on its wrapped continuations.
 # Matches of $Regex, if given, are highlighted.
 function Write-WrappedHostLine {
     param (
@@ -399,58 +649,98 @@ function Write-WrappedHostLine {
 
     $minAvailableWidth = 20
     $available = $Width - $Prefix.Length
+    $wrap = $Width -gt 0 -and $available -ge $minAvailableWidth
 
-    if ($Width -le 0 -or $available -lt $minAvailableWidth) {
-        $hits = @(Get-HighlightHit -Text $Message -Regex $Regex)
-        Write-HighlightedLine -Prefix $Prefix -Text $Message -Offset 0 -Hits $hits -Color $Color
-        return
-    }
+    # One segment per displayed line. Indent is display-only; Sep is the
+    # single character that follows the line in the text matches are found
+    # in (a space after a wrap point, a newline after a real line break), so
+    # a match can span a wrap point.
+    $segments = [System.Collections.Generic.List[object]]::new()
 
-    $words = $Message -split '\s+' | Where-Object { $_.Length -gt 0 }
-    $lines = [System.Collections.Generic.List[string]]::new()
-    $current = ''
+    foreach ($logicalLine in ($Message -split "`n")) {
+        if (-not $wrap) {
+            $segments.Add([pscustomobject]@{ Indent = ''; Text = $logicalLine; Sep = "`n" })
+            continue
+        }
 
-    foreach ($word in $words) {
-        $candidate = if ($current.Length -eq 0) { $word } else { "$current $word" }
+        $lead = [regex]::Match($logicalLine, '^\s*').Value
 
-        if ($candidate.Length -gt $available -and $current.Length -gt 0) {
+        if ($lead.Length -gt $available - $minAvailableWidth) {
+            $lead = ''
+        }
+
+        $maxWidth = $available - $lead.Length
+        $words = $logicalLine.TrimStart() -split '\s+' | Where-Object { $_.Length -gt 0 }
+        $lines = [System.Collections.Generic.List[string]]::new()
+        $current = ''
+
+        foreach ($word in $words) {
+            $candidate = if ($current.Length -eq 0) { $word } else { "$current $word" }
+
+            if ($candidate.Length -gt $maxWidth -and $current.Length -gt 0) {
+                $lines.Add($current)
+                $current = $word
+            } else {
+                $current = $candidate
+            }
+        }
+
+        if ($current.Length -gt 0 -or $lines.Count -eq 0) {
             $lines.Add($current)
-            $current = $word
-        } else {
-            $current = $candidate
+        }
+
+        for ($i = 0; $i -lt $lines.Count; $i++) {
+            $segments.Add([pscustomobject]@{
+                Indent = if ($i -eq 0) { '' } else { $lead }
+                Text   = if ($i -eq 0) { $lead + $lines[$i] } else { $lines[$i] }
+                Sep    = if ($i -lt $lines.Count - 1) { ' ' } else { "`n" }
+            })
         }
     }
 
-    if ($current.Length -gt 0 -or $lines.Count -eq 0) {
-        $lines.Add($current)
-    }
-
-    # Match against the whitespace-normalized message that the wrapped lines
-    # are cut from, so a match that spans a wrap point is still highlighted.
-    $hits = @(Get-HighlightHit -Text ($lines -join ' ') -Regex $Regex)
-    $indent = ' ' * $Prefix.Length
+    $fullText = -join ($segments | ForEach-Object { $_.Text + $_.Sep })
+    $hits = @(Get-HighlightHit -Text $fullText -Regex $Regex)
+    $continuation = ' ' * $Prefix.Length
     $offset = 0
 
-    for ($i = 0; $i -lt $lines.Count; $i++) {
-        $linePrefix = if ($i -eq 0) { $Prefix } else { $indent }
-        Write-HighlightedLine -Prefix $linePrefix -Text $lines[$i] -Offset $offset -Hits $hits -Color $Color
-        $offset += $lines[$i].Length + 1
+    for ($i = 0; $i -lt $segments.Count; $i++) {
+        $basePrefix = if ($i -eq 0) { $Prefix } else { $continuation }
+        $linePrefix = $basePrefix + $segments[$i].Indent
+        Write-HighlightedLine -Prefix $linePrefix -Text $segments[$i].Text -Offset $offset -Hits $hits -Color $Color
+        $offset += $segments[$i].Text.Length + 1
     }
 }
+
+# Raw (non-CMTrace) lines are hidden when filtering by severity or by a
+# custom filter.
+$showPlainLines = $Type -contains 'All' -and -not $PSBoundParameters.ContainsKey('WhereObject')
+
+# A message with line breaks spans several physical lines; the lines read so
+# far are held here until the closing "]LOG]!><...>" line arrives.
+$script:pendingEntry = $null
 
 Get-Content @getContentParameters | ForEach-Object {
     $line = $_
 
+    if ($null -ne $script:pendingEntry) {
+        if ($line.StartsWith('<![LOG[')) {
+            # A new entry began, so the pending one was never completed.
+            Write-PlainLine -Text $script:pendingEntry
+            $script:pendingEntry = $null
+        } else {
+            $line = $script:pendingEntry + "`n" + $line
+            $script:pendingEntry = $null
+        }
+    }
+
+    if ($line.StartsWith('<![LOG[') -and $line -notmatch $cmTracePattern) {
+        $script:pendingEntry = $line
+        return
+    }
+
     # Handle lines that are not in CMTrace format.
     if ($line -notmatch $cmTracePattern) {
-        if (
-            $Type -contains 'All' -and
-            -not $PSBoundParameters.ContainsKey('WhereObject') -and
-            (-not $HighlightOnly -or $highlightRegex.IsMatch($line))
-        ) {
-            Write-WrappedHostLine -Prefix '' -Message $line -Color DarkGray -Width 0 -Regex $highlightRegex
-        }
-
+        Write-PlainLine -Text $line
         return
     }
 
@@ -518,7 +808,15 @@ Get-Content @getContentParameters | ForEach-Object {
     }
 
     $prefix = if ($visibleFields.Count -gt 0) { ($visibleFields -join ' ') + ' ' } else { '' }
-    $message = if ($effectiveHideField -contains 'Message') { '' } else { $entry.Message }
+    $message = ''
+
+    if ($effectiveHideField -notcontains 'Message') {
+        $message = Format-MessageLines -Message $entry.Message
+
+        if ($FormatJson) {
+            $message = Format-MessageJson -Message $message
+        }
+    }
 
     $color = switch ($entry.Severity) {
         'Warning' { 'Yellow' }
