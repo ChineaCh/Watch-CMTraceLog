@@ -46,11 +46,19 @@
     After processing those lines, the script continues monitoring the file
     for new entries.
 
-    If Tail is omitted, the entire existing log is processed.
+    The default is 50, so the view is limited to the last 50 lines unless
+    you ask for more. A notice is printed at startup when the view is
+    limited. To process the entire existing log, use -FullLog.
 
     Tail is applied before parsing and filtering. For example, using
     "-Tail 100 -Type Error" examines the last 100 physical lines and displays
     only errors found within those lines.
+
+.PARAMETER FullLog
+    Processes the entire existing log instead of only the last -Tail lines
+    (50 by default), then follows new entries.
+
+    Cannot be combined with -Tail.
 
 .PARAMETER WhereObject
     Specifies an optional Where-Object filter script to apply to every parsed
@@ -148,14 +156,22 @@
     .\Watch-CMTraceLog.ps1 `
         -LogFile 'C:\Windows\CCM\Logs\AppEnforce.log'
 
+    Processes the last 50 physical lines (the default) and follows new
+    entries.
+
+.EXAMPLE
+    .\Watch-CMTraceLog.ps1 `
+        -LogFile 'C:\Windows\CCM\Logs\AppEnforce.log' `
+        -FullLog
+
     Processes the entire existing log and follows new entries.
 
 .EXAMPLE
     .\Watch-CMTraceLog.ps1 `
         -LogFile 'C:\Windows\CCM\Logs\AppEnforce.log' `
-        -Tail 50
+        -Tail 200
 
-    Processes the last 50 physical lines and follows new entries.
+    Processes the last 200 physical lines and follows new entries.
 
 .EXAMPLE
     .\Watch-CMTraceLog.ps1 `
@@ -276,7 +292,10 @@ param (
 
     [Parameter()]
     [ValidateRange(1, [int]::MaxValue)]
-    [int]$Tail,
+    [int]$Tail = 50,
+
+    [Parameter()]
+    [switch]$FullLog,
 
     [Parameter()]
     [scriptblock]$WhereObject,
@@ -349,8 +368,13 @@ $getContentParameters = @{
     Wait        = $true
 }
 
-if ($PSBoundParameters.ContainsKey('Tail')) {
+if ($FullLog) {
+    if ($PSBoundParameters.ContainsKey('Tail')) {
+        throw 'Specify either -FullLog or -Tail, not both.'
+    }
+} else {
     $getContentParameters.Tail = $Tail
+    Write-Host "Showing the last $Tail lines of the log. Use -FullLog to show the entire file, or -Tail to change the limit." -ForegroundColor Cyan
 }
 
 # Returns the current console width, or 0 when output is redirected (piped
