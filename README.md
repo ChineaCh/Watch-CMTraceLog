@@ -8,6 +8,7 @@ A colorized, live-following viewer for CMTrace-formatted logs — the log format
 - Color-codes output by severity: **Information** = Gray, **Warning** = Yellow, **Error** = Red. Non-CMTrace lines pass through in dark gray.
 - Word-wraps long messages to the console width, indenting continuation lines under the message column instead of letting the terminal hard-wrap mid-word. Skipped automatically when output is redirected.
 - Lets you hide individual fields (`Timestamp`, `Component`, `Severity`, `Thread`, `Message`) from the displayed line, while still filtering on them via `-Type` or `-WhereObject`. `-Compact` is a shorthand for showing only Timestamp and Message.
+- Highlights regex matches live (`-Highlight`), optionally hiding non-matching entries (`-HighlightOnly`), so a `Select-String`-style search works while following the log.
 - After processing existing lines, keeps the file open and prints new entries as they're written (like `tail -f`).
 
 ## Usage
@@ -32,6 +33,12 @@ A colorized, live-following viewer for CMTrace-formatted logs — the log format
 # Filter on a field while hiding it from the displayed line
 .\Watch-CMTraceLog.ps1 -LogFile 'C:\Windows\CCM\Logs\AppEnforce.log' -WhereObject { $_.Severity -eq 'Error' } -HideField Severity, Thread
 
+# Highlight matches live, like Select-String (regex, case-insensitive)
+.\Watch-CMTraceLog.ps1 -LogFile 'C:\ProgramData\Microsoft\IntuneManagementExtension\Logs\AppActionProcessor.log' -Highlight $Parent, $Dep, 'effective intent', 'blocked on dependency'
+
+# Same, but hide entries that don't match (filter + highlight)
+.\Watch-CMTraceLog.ps1 -LogFile 'C:\ProgramData\Microsoft\IntuneManagementExtension\Logs\AppActionProcessor.log' -Tail 80 -Highlight $Parent, $Dep, 'Found:' -HighlightOnly
+
 # Only show Timestamp and Message
 .\Watch-CMTraceLog.ps1 -LogFile 'C:\Windows\CCM\Logs\AppEnforce.log' -Compact
 ```
@@ -47,6 +54,8 @@ Press `Ctrl+C` to stop monitoring.
 | `-Tail`       | No       | Number of existing physical lines to process before following. Omit to process the entire existing log. Applied before parsing/filtering. |
 | `-WhereObject`| No       | A scriptblock filter applied to every parsed entry (`$_`). Non-CMTrace lines are hidden when this is set. |
 | `-HideField`  | No       | Fields to omit from the displayed line: `Timestamp`, `Component`, `Severity`, `Thread`, `Message`. Accepts multiple values. Hidden fields remain available for filtering via `-Type`/`-WhereObject`. Cannot be combined with `-Compact`. |
+| `-Highlight`  | No       | One or more regexes to highlight (black on yellow) in the message while following. Case-insensitive; works across word-wrapped lines. |
+| `-HighlightOnly` | No    | Show only entries whose message matches a `-Highlight` pattern (like `Select-String`). Requires `-Highlight`. |
 | `-Compact`    | No       | Shorthand for `-HideField Component, Severity, Thread` — shows only Timestamp and Message. Cannot be combined with `-HideField`. |
 
 See the script's comment-based help (`Get-Help .\Watch-CMTraceLog.ps1 -Full`) for the complete parameter reference and more examples.

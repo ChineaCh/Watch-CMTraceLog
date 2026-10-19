@@ -105,6 +105,26 @@
 
     Cannot be combined with -HideField.
 
+.PARAMETER Highlight
+    Specifies one or more regular expressions to highlight in the displayed
+    message as entries are written. Matches are shown in black on a yellow
+    background, similar to how Select-String highlights matches in
+    PowerShell 7. Matching is case-insensitive.
+
+    Highlighting works while following the log, and across word-wrapped
+    lines. Non-CMTrace lines are highlighted too.
+
+    Highlight only changes how matches are displayed. Combine it with
+    -HighlightOnly to also hide entries that do not match.
+
+.PARAMETER HighlightOnly
+    Displays only the entries whose message matches at least one of the
+    -Highlight patterns, like piping the log through Select-String. For
+    non-CMTrace lines the whole line is matched. This is applied after
+    -Type and -WhereObject.
+
+    Requires -Highlight.
+
 .EXAMPLE
     .\Watch-CMTraceLog.ps1 `
         -LogFile 'C:\Windows\CCM\Logs\AppEnforce.log'
@@ -175,6 +195,16 @@
 
     Displays only the Timestamp and Message fields.
 
+.EXAMPLE
+    .\Watch-CMTraceLog.ps1 `
+        -LogFile 'C:\ProgramData\Microsoft\IntuneManagementExtension\Logs\AppActionProcessor.log' `
+        -Highlight $Parent, $Dep, 'effective intent', 'enforceability', 'Found:', 'blocked on dependency' `
+        -HighlightOnly `
+        -Tail 80
+
+    Live-follows the log, showing only entries that match one of the
+    patterns, with each match highlighted.
+
 .INPUTS
     None.
 
@@ -222,7 +252,14 @@ param (
     [string[]]$HideField = @(),
 
     [Parameter()]
-    [switch]$Compact
+    [switch]$Compact,
+
+    [Parameter()]
+    [ValidateNotNullOrEmpty()]
+    [string[]]$Highlight,
+
+    [Parameter()]
+    [switch]$HighlightOnly
 )
 
 if (-not (Test-Path -LiteralPath $LogFile -PathType Leaf)) {
@@ -231,6 +268,24 @@ if (-not (Test-Path -LiteralPath $LogFile -PathType Leaf)) {
 
 if ($Compact -and $PSBoundParameters.ContainsKey('HideField')) {
     throw 'Specify either -Compact or -HideField, not both.'
+}
+
+if ($HighlightOnly -and -not $PSBoundParameters.ContainsKey('Highlight')) {
+    throw '-HighlightOnly requires -Highlight.'
+}
+
+# Combine all -Highlight patterns into a single case-insensitive regex.
+$highlightRegex = $null
+
+if ($PSBoundParameters.ContainsKey('Highlight')) {
+    try {
+        $highlightRegex = [regex]::new(
+            (($Highlight | ForEach-Object { "(?:$_)" }) -join '|'),
+            [System.Text.RegularExpressions.RegexOptions]::IgnoreCase
+        )
+    } catch {
+        throw "Invalid -Highlight pattern: $($_.Exception.Message)"
+    }
 }
 
 # -Compact is shorthand for hiding every field except Timestamp and Message.
@@ -278,21 +333,76 @@ function Get-ConsoleWidth {
     return $width
 }
 
+# Returns the non-empty regex matches in $Text, or nothing when no regex is set.
+function Get-HighlightHit {
+    param (
+        [string]$Text,
+        [regex]$Regex
+    )
+
+    if ($null -eq $Regex) {
+        return
+    }
+
+    $Regex.Matches($Text) | Where-Object { $_.Length -gt 0 }
+}
+
+# Writes one line, painting the parts covered by $Hits with the highlight
+# colors. $Offset is where $Text starts within the string the hits were
+# matched against, so a line can be one slice of a wrapped message.
+function Write-HighlightedLine {
+    param (
+        [string]$Prefix,
+        [string]$Text,
+        [int]$Offset,
+        [object[]]$Hits,
+        [string]$Color
+    )
+
+    Write-Host $Prefix -NoNewline -ForegroundColor $Color
+
+    $position = 0
+    $end = $Offset + $Text.Length
+
+    foreach ($hit in $Hits) {
+        $from = [Math]::Max($hit.Index, $Offset)
+        $to = [Math]::Min($hit.Index + $hit.Length, $end)
+
+        if ($to -le $from) {
+            continue
+        }
+
+        $local = $from - $Offset
+
+        if ($local -gt $position) {
+            Write-Host $Text.Substring($position, $local - $position) -NoNewline -ForegroundColor $Color
+        }
+
+        Write-Host $Text.Substring($local, $to - $from) -NoNewline -ForegroundColor Black -BackgroundColor Yellow
+        $position = $local + ($to - $from)
+    }
+
+    Write-Host $Text.Substring($position) -ForegroundColor $Color
+}
+
 # Writes a prefixed line, word-wrapping the message so continuation lines
 # are indented to align under the message column instead of column 0.
+# Matches of $Regex, if given, are highlighted.
 function Write-WrappedHostLine {
     param (
         [string]$Prefix,
         [string]$Message,
         [string]$Color,
-        [int]$Width
+        [int]$Width,
+        [regex]$Regex
     )
 
     $minAvailableWidth = 20
     $available = $Width - $Prefix.Length
 
     if ($Width -le 0 -or $available -lt $minAvailableWidth) {
-        Write-Host ($Prefix + $Message) -ForegroundColor $Color
+        $hits = @(Get-HighlightHit -Text $Message -Regex $Regex)
+        Write-HighlightedLine -Prefix $Prefix -Text $Message -Offset 0 -Hits $hits -Color $Color
         return
     }
 
@@ -315,11 +425,16 @@ function Write-WrappedHostLine {
         $lines.Add($current)
     }
 
+    # Match against the whitespace-normalized message that the wrapped lines
+    # are cut from, so a match that spans a wrap point is still highlighted.
+    $hits = @(Get-HighlightHit -Text ($lines -join ' ') -Regex $Regex)
     $indent = ' ' * $Prefix.Length
+    $offset = 0
 
     for ($i = 0; $i -lt $lines.Count; $i++) {
         $linePrefix = if ($i -eq 0) { $Prefix } else { $indent }
-        Write-Host ($linePrefix + $lines[$i]) -ForegroundColor $Color
+        Write-HighlightedLine -Prefix $linePrefix -Text $lines[$i] -Offset $offset -Hits $hits -Color $Color
+        $offset += $lines[$i].Length + 1
     }
 }
 
@@ -330,9 +445,10 @@ Get-Content @getContentParameters | ForEach-Object {
     if ($line -notmatch $cmTracePattern) {
         if (
             $Type -contains 'All' -and
-            -not $PSBoundParameters.ContainsKey('WhereObject')
+            -not $PSBoundParameters.ContainsKey('WhereObject') -and
+            (-not $HighlightOnly -or $highlightRegex.IsMatch($line))
         ) {
-            Write-Host $line -ForegroundColor DarkGray
+            Write-WrappedHostLine -Prefix '' -Message $line -Color DarkGray -Width 0 -Regex $highlightRegex
         }
 
         return
@@ -376,6 +492,11 @@ Get-Content @getContentParameters | ForEach-Object {
         }
     }
 
+    # Apply the highlight-only filter against the message.
+    if ($HighlightOnly -and -not $highlightRegex.IsMatch($entry.Message)) {
+        return
+    }
+
     # Build the displayed line last, so hiding a field never affects
     # filtering above, which always sees the full parsed entry.
     $visibleFields = [System.Collections.Generic.List[string]]::new()
@@ -406,5 +527,5 @@ Get-Content @getContentParameters | ForEach-Object {
         default   { 'Gray' }
     }
 
-    Write-WrappedHostLine -Prefix $prefix -Message $message -Color $color -Width (Get-ConsoleWidth)
+    Write-WrappedHostLine -Prefix $prefix -Message $message -Color $color -Width (Get-ConsoleWidth) -Regex $highlightRegex
 }
