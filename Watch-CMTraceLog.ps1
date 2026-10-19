@@ -131,8 +131,9 @@
     kept; JSON that starts mid-line is moved to its own line.
 
     The JSON is re-indented token for token, so values such as
-    "\/Date(...)\/" and escaped nested JSON strings are shown exactly as
-    logged. Text that only looks like JSON, such as "[Win32App]", is left
+    "\/Date(...)\/" are shown exactly as logged. A string value that itself
+    contains escaped JSON (for example an "Info" or "Value" property) is
+    expanded in place as a nested object or array, at any depth. Text that only looks like JSON, such as "[Win32App]", is left
     alone.
 
     This only affects what is displayed. -WhereObject and -HighlightOnly
@@ -475,17 +476,46 @@ function Find-JsonEnd {
     return -1
 }
 
+# Returns $true when $Text is a JSON object or array that opens with a key,
+# string, or nested structure; skips things like "[Win32App]", "[1]" and "{}".
+function Test-JsonText {
+    param (
+        [string]$Text
+    )
+
+    if ($Text -notmatch '^[\[{]\s*["{\[]') {
+        return $false
+    }
+
+    if ((Find-JsonEnd -Text $Text -Start 0) -ne $Text.Length - 1) {
+        return $false
+    }
+
+    try {
+        $null = ConvertFrom-Json -InputObject $Text -ErrorAction Stop
+    } catch {
+        return $false
+    }
+
+    return $true
+}
+
 # Re-indents a JSON document token for token (two spaces per level) without
-# parsing values, so the text is shown exactly as it was logged.
+# parsing values, so the text is shown exactly as it was logged. A string
+# value that itself holds a JSON object or array (escaped JSON) is expanded
+# in place, at any nesting level.
 function Format-JsonText {
     param (
-        [string]$Json
+        [string]$Json,
+        [int]$Depth = 0
     )
 
     $sb = [System.Text.StringBuilder]::new()
-    $depth = 0
+    $depth = $Depth
     $inString = $false
     $escaped = $false
+    $stringStart = 0
+    $stringMark = 0
 
     for ($i = 0; $i -lt $Json.Length; $i++) {
         $c = $Json[$i]
@@ -499,6 +529,18 @@ function Format-JsonText {
                 $escaped = $true
             } elseif ($c -eq [char]'"') {
                 $inString = $false
+
+                # Expand a string whose content is itself JSON.
+                $inner = $Json.Substring($stringStart + 1, $i - $stringStart - 1)
+
+                if ($inner.Contains('\"')) {
+                    $unescaped = [regex]::Unescape($inner).Trim()
+
+                    if (Test-JsonText -Text $unescaped) {
+                        $sb.Length = $stringMark
+                        $null = $sb.Append((Format-JsonText -Json $unescaped -Depth $depth))
+                    }
+                }
             }
 
             continue
@@ -506,6 +548,8 @@ function Format-JsonText {
 
         if ($c -eq [char]'"') {
             $inString = $true
+            $stringStart = $i
+            $stringMark = $sb.Length
             $null = $sb.Append($c)
         } elseif ($c -eq [char]'{' -or $c -eq [char]'[') {
             $close = if ($c -eq [char]'{') { [char]'}' } else { [char]']' }
@@ -566,19 +610,7 @@ function Format-MessageJson {
 
         $candidate = $Message.Substring($i, $end - $i + 1)
 
-        # Only objects/arrays that open with a key, string, or nested
-        # structure; skips things like "[Win32App]", "[1]" and "{}".
-        $isJson = $candidate -match '^[\[{]\s*["{\[]'
-
-        if ($isJson) {
-            try {
-                $null = ConvertFrom-Json -InputObject $candidate -ErrorAction Stop
-            } catch {
-                $isJson = $false
-            }
-        }
-
-        if (-not $isJson) {
+        if (-not (Test-JsonText -Text $candidate)) {
             $i++
             continue
         }

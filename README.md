@@ -60,7 +60,7 @@ Press `Ctrl+C` to stop monitoring.
 | `-HideField`  | No       | Fields to omit from the displayed line: `Timestamp`, `Component`, `Severity`, `Thread`, `Message`. Accepts multiple values. Hidden fields remain available for filtering via `-Type`/`-WhereObject`. Cannot be combined with `-Compact`. |
 | `-Highlight`  | No       | One or more regexes to highlight (black on yellow) in the message while following. Case-insensitive; works across word-wrapped lines. |
 | `-HighlightOnly` | No    | Show only entries whose message matches a `-Highlight` pattern (like `Select-String`). Requires `-Highlight`. |
-| `-FormatJson` | No       | Pretty-print JSON objects/arrays found in messages (2-space indent, shown exactly as logged). Display only; filters see the original message. |
+| `-FormatJson` | No       | Pretty-print JSON objects/arrays found in messages (2-space indent, shown as logged); escaped JSON inside string values is expanded too. Display only; filters see the original message. |
 | `-Compact`    | No       | Shorthand for `-HideField Component, Severity, Thread` — shows only Timestamp and Message. Cannot be combined with `-HideField`. |
 
 See the script's comment-based help (`Get-Help .\Watch-CMTraceLog.ps1 -Full`) for the complete parameter reference and more examples.
